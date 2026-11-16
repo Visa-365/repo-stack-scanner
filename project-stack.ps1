@@ -68,7 +68,7 @@ param(
 
     [string[]]$Subdirectories = @(),
 
-    [bool]$Recurse = $true,
+    [switch]$Recurse = $true,
 
     [switch]$ReuseExisting,
 
