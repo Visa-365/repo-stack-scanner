@@ -1,0 +1,38 @@
+# Project documentation PDF (local only)
+repo_technologes_scaner.pdf
+
+# Scanner output directories
+project-stack-*/
+
+# Cloned / temporary working copies
+repo-*/
+
+# PowerShell / local env
+*.ps1xml
+*.local.ps1
+.env
+.env.*
+!.env.example
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.swp
+*~
+.vscode/
+.idea/
+*.code-workspace
+
+# Logs and temp
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Python tooling leftovers (if used for local helpers)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
