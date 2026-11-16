@@ -17,8 +17,6 @@ CLI на PowerShell для **инвентаризации технологий**
 Get-Help .\project-stack.ps1 -Full
 ```
 
-> `ProjectStack.ps1` — совместимый shim → `project-stack.ps1`.
-
 ## Быстрый старт
 
 ```powershell
@@ -121,7 +119,6 @@ Score — сумма сигналов по находке (макс. 100), за�
 ```
 .
 ├── project-stack.ps1
-├── ProjectStack.ps1
 ├── config/
 │   └── markers.json
 ├── README.md
