@@ -152,6 +152,22 @@ function Get-ProjectFile {
     return $null
 }
 
+function ConvertTo-ObjectArray {
+    param($InputObject)
+
+    # StrictMode-safe: functions may unwrap single-element arrays or
+    # turn empty arrays into $null. The leading comma prevents that.
+    if ($null -eq $InputObject) {
+        return , @()
+    }
+
+    if ($InputObject -is [System.Array]) {
+        return , $InputObject
+    }
+
+    return , @($InputObject)
+}
+
 function ConvertFrom-JsonFile {
     param([string]$FilePath)
 
@@ -193,7 +209,7 @@ function Get-DockerfileVersions {
         }
     }
 
-    $versions
+    return $versions
 }
 
 function Get-NpmVersion {
@@ -693,7 +709,13 @@ function Find-TechnologyMarkers {
                 }
             }
 
-            if ($marker.Directories) {
+            $isDirectoryMarker = $false
+            $directoriesProperty = $marker.PSObject.Properties["Directories"]
+            if ($null -ne $directoriesProperty -and $directoriesProperty.Value) {
+                $isDirectoryMarker = $true
+            }
+
+            if ($isDirectoryMarker) {
                 foreach ($directoryName in $marker.Files) {
                     $candidate = Join-Path $root $directoryName
                     if (Test-Path -LiteralPath $candidate -PathType Container) {
@@ -755,7 +777,7 @@ function Find-TechnologyMarkers {
         }
     }
 
-    $findings
+    return $findings
 }
 
 function Get-VersionedFindings {
@@ -765,10 +787,12 @@ function Get-VersionedFindings {
         [string[]]$ExtraKeywords
     )
 
-    $findings = Find-TechnologyMarkers `
-        -Root $Root `
-        -Subdirectories $Subdirectories `
-        -ExtraKeywords $ExtraKeywords
+    $findings = ConvertTo-ObjectArray -InputObject (
+        Find-TechnologyMarkers `
+            -Root $Root `
+            -Subdirectories $Subdirectories `
+            -ExtraKeywords $ExtraKeywords
+    )
 
     $versionedFindings = @()
 
@@ -839,7 +863,9 @@ function Get-VersionedFindings {
             }
 
             if ($null -ne $dockerfile) {
-                $dockerVersions = Get-DockerfileVersions -DockerfilePath $dockerfile
+                $dockerVersions = ConvertTo-ObjectArray -InputObject (
+                    Get-DockerfileVersions -DockerfilePath $dockerfile
+                )
 
                 if ($dockerVersions.Count -gt 0) {
                     $finding | Add-Member -NotePropertyName DockerImages `
@@ -863,7 +889,7 @@ function Get-VersionedFindings {
         }
     }
 
-    $versionedFindings
+    return $versionedFindings
 }
 
 function ConvertTo-MarkdownReport {
@@ -947,10 +973,12 @@ $projectRoot = Get-RepositoryContent `
 
 Write-Host ("Analyzing: " + $projectRoot)
 
-$findings = @(Get-VersionedFindings `
-    -Root $projectRoot `
-    -Subdirectories $Subdirectories `
-    -ExtraKeywords $ExtraKeywords)
+$findings = ConvertTo-ObjectArray -InputObject (
+    Get-VersionedFindings `
+        -Root $projectRoot `
+        -Subdirectories $Subdirectories `
+        -ExtraKeywords $ExtraKeywords
+)
 
 [void](New-Item -ItemType Directory -Path $OutputDirectory -Force)
 
@@ -960,17 +988,15 @@ $findings |
 
 if ($OutputFormat -in @("markdown", "all")) {
     ConvertTo-MarkdownReport -Findings $findings |
-        Set-Content -LiteralPath (
-            Join-Path $OutputDirectory "README.md")
-        -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $OutputDirectory "README.md") `
+            -Encoding UTF8
 }
 
 if ($OutputFormat -in @("json", "all")) {
     ConvertTo-ResumeJson -Findings $findings |
         ConvertTo-Json -Depth 6 |
-        Set-Content -LiteralPath (
-            Join-Path $OutputDirectory "technologies.json")
-        -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $OutputDirectory "technologies.json") `
+            -Encoding UTF8
 }
 
 if ($OutputFormat -in @("csv", "all")) {
