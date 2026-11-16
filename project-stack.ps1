@@ -15,7 +15,11 @@
     Local folder, HTTPS/SSH git URL, or GitHub shorthand owner/repo.
 
 .PARAMETER TargetDirectory
-    Clone destination for remote repositories. Local folders are never copied.
+    Clone destination for remote repositories. Default: <OutputDirectory>\source.
+    Local folders are never copied.
+
+.PARAMETER CleanupClone
+    Delete the cloned source directory after the scan finishes (remote only).
 
 .PARAMETER Subdirectories
     Limit scanning to these project-relative folders (monorepo). Empty = project root.
@@ -37,7 +41,8 @@
     markdown | csv | json | resume | all
 
 .PARAMETER OutputDirectory
-    Directory for report files. Default: ./project-stack-YYYYMMDD-HHmmss
+    Directory for report files (and default remote clone under source\).
+    Default: ./project-stack-YYYYMMDD-HHmmss
 
 .PARAMETER ExcludeDirectories
     Directory names skipped when -Recurse is on.
@@ -75,6 +80,8 @@ param(
     [string]$Repository,
 
     [string]$TargetDirectory = "",
+
+    [switch]$CleanupClone,
 
     [string[]]$Subdirectories = @(),
 
@@ -180,19 +187,27 @@ function Get-RepositoryContent {
     }
 
     if ([string]::IsNullOrWhiteSpace($TargetDirectory)) {
-        $safeName = $Target.Path -replace "[^A-Za-z0-9_.-]", "_"
-        $TargetDirectory = Join-Path $env:TEMP ("repo-" + $safeName)
+        throw "TargetDirectory is required for remote repositories."
     }
 
-    $existing = @(Get-ChildItem -LiteralPath $TargetDirectory `
-        -Directory -ErrorAction SilentlyContinue)
+    $TargetDirectory = [System.IO.Path]::GetFullPath($TargetDirectory)
+    $parent = Split-Path -Parent $TargetDirectory
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
+        [void](New-Item -ItemType Directory -Path $parent -Force)
+    }
 
-    if ($existing.Count -gt 0) {
-        if ($ReuseExisting) {
-            return $existing[0].FullName
+    if (Test-Path -LiteralPath $TargetDirectory) {
+        $existingItems = @(
+            Get-ChildItem -LiteralPath $TargetDirectory -Force -ErrorAction SilentlyContinue
+        )
+
+        if ($existingItems.Count -gt 0) {
+            if ($ReuseExisting) {
+                return $TargetDirectory
+            }
+
+            throw ("Target directory is not empty: " + $TargetDirectory)
         }
-
-        throw ("Target directory is not empty: " + $TargetDirectory)
     }
 
     $gitExe = (Get-Command -Name git -ErrorAction Stop).Source
@@ -202,6 +217,7 @@ function Get-RepositoryContent {
     )
 
     Write-Host ("Cloning: " + $Target.Path)
+    Write-Host ("  into: " + $TargetDirectory)
     & $gitExe @argumentList
 
     if ($LASTEXITCODE -ne 0) {
@@ -1745,6 +1761,9 @@ function ConvertTo-ResumeJson {
 
 # --- Main ---
 
+$clonedSourcePath = $null
+$exitCode = 0
+
 try {
     Write-Host ("{0}: resolving repository..." -f $script:CliName)
 
@@ -1752,10 +1771,21 @@ try {
 
     $target = Resolve-RepositoryTarget -Source $Repository
 
+    [void](New-Item -ItemType Directory -Path $OutputDirectory -Force)
+
+    $cloneDirectory = $TargetDirectory
+    if ($target.Kind -eq "remote" -and [string]::IsNullOrWhiteSpace($cloneDirectory)) {
+        $cloneDirectory = Join-Path $OutputDirectory "source"
+    }
+
     $projectRoot = Get-RepositoryContent `
         -Target $target `
-        -TargetDirectory $TargetDirectory `
+        -TargetDirectory $cloneDirectory `
         -ReuseExisting:$ReuseExisting.IsPresent
+
+    if ($target.Kind -eq "remote") {
+        $clonedSourcePath = $projectRoot
+    }
 
     Write-Host ("{0}: analyzing {1}" -f $script:CliName, $projectRoot)
     Write-Host ("{0}: markers catalog {1}" -f $script:CliName, $script:MarkersCatalog.Path)
@@ -1781,8 +1811,6 @@ try {
     $findings = ConvertTo-ObjectArray -InputObject (
         Select-FindingsByConfidence -Findings $findings -MinConfidence $MinConfidence -MinScore $MinScore
     )
-
-    [void](New-Item -ItemType Directory -Path $OutputDirectory -Force)
 
     $findings |
         Select-Object Technology, Category, Version, VersionSource, Confidence, Score, Relation, Uses, IsPrimary, Description, Evidence, ResumeLine, @{
@@ -1829,33 +1857,45 @@ try {
 
     if ($findings.Count -eq 0) {
         Write-Warning "No technologies detected for the current filters."
-        exit 2
-    }
-
-    Write-Host ""
-    Write-Host ("Detected {0} technologies:" -f $findings.Count)
-    Write-Host ""
-
-    $findings |
-        Sort-Object @{Expression = "Score"; Descending = $true}, Category, Technology |
-        Format-Table Technology, Category, Version, Score, Confidence, Relation -AutoSize -Wrap
-
-    $summary = Get-ResumeSummary -Findings $findings -Capabilities $capabilities -CollapseImplied:$CollapseImplied
-    Write-Host "Capabilities:"
-    if ($capabilities.Count -gt 0) {
-        Write-Host ("  " + ($capabilities -join " · "))
+        $exitCode = 2
     }
     else {
-        Write-Host "  (none)"
+        Write-Host ""
+        Write-Host ("Detected {0} technologies:" -f $findings.Count)
+        Write-Host ""
+
+        $findings |
+            Sort-Object @{Expression = "Score"; Descending = $true}, Category, Technology |
+            Format-Table Technology, Category, Version, Score, Confidence, Relation -AutoSize -Wrap
+
+        $summary = Get-ResumeSummary -Findings $findings -Capabilities $capabilities -CollapseImplied:$CollapseImplied
+        Write-Host "Capabilities:"
+        if ($capabilities.Count -gt 0) {
+            Write-Host ("  " + ($capabilities -join " · "))
+        }
+        else {
+            Write-Host "  (none)"
+        }
+        Write-Host "Resume stack:"
+        Write-Host ("  " + $summary.StackLine)
+        Write-Host ""
+        Write-Host ("Reports: " + (Get-Item -LiteralPath $OutputDirectory).FullName)
+        $exitCode = 0
     }
-    Write-Host "Resume stack:"
-    Write-Host ("  " + $summary.StackLine)
-    Write-Host ""
-    Write-Host ("Reports: " + (Get-Item -LiteralPath $OutputDirectory).FullName)
-    exit 0
 }
 catch {
     Write-Error ("{0}: {1}" -f $script:CliName, $_.Exception.Message)
-    exit 1
+    $exitCode = 1
 }
+finally {
+    if ($CleanupClone.IsPresent -and -not [string]::IsNullOrWhiteSpace($clonedSourcePath)) {
+        if (Test-Path -LiteralPath $clonedSourcePath) {
+            Write-Host ("{0}: cleaning up clone {1}" -f $script:CliName, $clonedSourcePath)
+            Remove-Item -LiteralPath $clonedSourcePath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+exit $exitCode
+
 

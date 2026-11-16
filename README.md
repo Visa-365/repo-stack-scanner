@@ -30,7 +30,9 @@ Get-Help .\project-stack.ps1 -Full
 .\project-stack.ps1 owner/repo -OutputFormat all
 ```
 
-Отчёты: `./project-stack-YYYYMMDD-HHmmss/`.
+Отчёты: `./project-stack-YYYYMMDD-HHmmss/`.  
+Для remote URL клон по умолчанию: `./project-stack-YYYYMMDD-HHmmss/source/` (не `%TEMP%`).  
+Удалить клон после скана: `-CleanupClone`.
 
 ## CLI-параметры
 
@@ -43,11 +45,13 @@ Get-Help .\project-stack.ps1 -Full
 | `-CollapseImplied` | Скрывать implied-технологии из resume stack (default `$true`) |
 | `-MarkersPath` | Путь к `markers.json` (default `config/markers.json`) |
 | `-OutputFormat` (`-Format`) | `markdown`, `csv`, `json`, `resume`, `all` |
-| `-OutputDirectory` (`-o`) | Каталог отчётов |
+| `-OutputDirectory` (`-o`) | Каталог отчётов (и клона `source\` для remote) |
+| `-TargetDirectory` | Куда клонировать remote (по умолчанию `<OutputDirectory>\source`) |
+| `-CleanupClone` | Удалить клон `source\` после скана |
+| `-ReuseExisting` | Не клонировать повторно, если целевая папка уже есть |
 | `-Subdirectories` | Ограничить сканирование подпапками |
 | `-ExtraKeywords` | Дополнительные пакеты/ключевые слова |
 | `-ExcludeDirectories` | Каталоги, пропускаемые при рекурсии |
-| `-TargetDirectory` / `-ReuseExisting` | Клон remote |
 | `-ShowHidden` | Включать скрытые файлы |
 
 Коды выхода: `0` ok, `1` error, `2` nothing found.
@@ -66,12 +70,13 @@ Get-Help .\project-stack.ps1 -Full
 
 ## Отчёты
 
-| Файл | Когда | Содержимое |
+| Файл / папка | Когда | Содержимое |
 |---|---|---|
 | `technologies.csv` | всегда | таблица + score/relation |
 | `README.md` | `markdown` / `all` | inventory + resume + capabilities |
 | `resume.md` | `resume` / `all` | формулировки для CV |
 | `technologies.json` | `json` / `resume` / `all` | JSON + Summary + Capabilities |
+| `source\` | remote без `-CleanupClone` | shallow-клон репозитория |
 
 ### Как считается Score
 
