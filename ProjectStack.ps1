@@ -60,7 +60,7 @@ if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
     throw "CLI entry not found: $target"
 }
 
-Write-Warning "Test-ProjectStack.ps1 is a compatibility shim. Use .\project-stack.ps1 instead."
+Write-Warning "ProjectStack.ps1 is a compatibility shim. Use .\project-stack.ps1 instead."
 
 & $target @PSBoundParameters
 exit $LASTEXITCODE
