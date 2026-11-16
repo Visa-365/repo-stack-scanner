@@ -75,7 +75,32 @@ Get-Help .\project-stack.ps1 -Full
 | `resume.md` | `resume` / `all` | формулировки для CV |
 | `technologies.json` | `json` / `resume` / `all` | JSON + Summary + Capabilities |
 
-### Score / Confidence
+### Как считается Score
+
+Score — сумма сигналов по находке (макс. 100), затем при необходимости поднимается до floor из каталога. По итоговому score выставляется `confidence`.
+
+#### Базовые баллы
+
+| Сигнал | Баллы | Когда |
+|---|---|---|
+| File / directory marker | +50 | найден конфиг или папка (`Dockerfile`, `tsconfig.json`, `.github/workflows/` …) |
+| Package match | +35 | пакет найден в зависимостях (`requirements.txt`, `package.json`, …) |
+| Version | +15 | удалось извлечь версию |
+| Несколько evidence | +10 | в Evidence ≥ 2 частей (через `;`) |
+
+#### Floor из `markers.json`
+
+Исходный `confidence` маркера в каталоге задаёт минимум, если технология реально обнаружена (есть file / directory / package):
+
+| Catalog confidence | Floor |
+|---|---|
+| high | 75 |
+| medium | 50 |
+| low / иное | 25 |
+
+Если сырой score ниже floor — он поднимается до floor. Так явный маркер (например Docker) не уезжает в `medium` только из‑за отсутствия версии.
+
+#### Score → Confidence
 
 | Score | Confidence |
 |---|---|
@@ -83,7 +108,13 @@ Get-Help .\project-stack.ps1 -Full
 | ≥ 45 | medium |
 | < 45 | low |
 
-Сигналы: file/directory marker, package match, pinned version, несколько evidence.
+#### Примеры
+
+- **FastAPI** в `requirements.txt` + версия `0.135.0` → package 35 + version 15 = 50, catalog `high` → floor **75** → **high**
+- **Docker** по compose/Dockerfile + version из `FROM` → file 50 + version 15 + multi-evidence 10 = **75** → **high**
+- **Express** только как package + version → 35 + 15 = 50, catalog `medium` → floor **50** → **medium**
+
+Фильтры `-MinConfidence` и `-MinScore` отсекают находки уже после этого расчёта.
 
 ## Структура
 
