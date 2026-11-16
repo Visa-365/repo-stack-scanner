@@ -45,11 +45,21 @@
 .PARAMETER ShowHidden
     Include hidden files/directories while recursing.
 
-.EXAMPLE
-    .\project-stack.ps1 -Repository "C:\Projects\my-app" -Recurse -OutputFormat all
+.PARAMETER MarkersPath
+    Path to markers.json catalog. Default: config/markers.json next to the CLI.
+
+.PARAMETER CollapseImplied
+    Hide technologies that are only implied by a more specific stack item
+    from resume/stack summaries (still listed in the full inventory).
+
+.PARAMETER MinScore
+    Drop findings with score below this threshold (0-100). Default: 0.
 
 .EXAMPLE
-    .\project-stack.ps1 owner/repo -Recurse -MinConfidence high -OutputFormat resume
+    .\project-stack.ps1 -Repository "C:\Projects\my-app" -OutputFormat all
+
+.EXAMPLE
+    .\project-stack.ps1 owner/repo -MinConfidence high -OutputFormat resume
 
 .EXAMPLE
     .\project-stack.ps1 -Repository "https://github.com/owner/monorepo.git" `
@@ -68,14 +78,17 @@ param(
 
     [string[]]$Subdirectories = @(),
 
-    [switch]$Recurse = $true,
+    [bool]$Recurse = $true,
 
     [switch]$ReuseExisting,
 
     [string[]]$ExtraKeywords = @(),
 
-    [ValidateSet("medium", "high")]
+    [ValidateSet("low", "medium", "high")]
     [string]$MinConfidence = "medium",
+
+    [ValidateRange(0, 100)]
+    [int]$MinScore = 0,
 
     [ValidateSet("csv", "markdown", "json", "resume", "all")]
     [Alias("Format")]
@@ -95,12 +108,17 @@ param(
         ".chroma", ".agents", ".langgraph", ".cache", "Pods"
     ),
 
+    [string]$MarkersPath = "",
+
+    [bool]$CollapseImplied = $true,
+
     [switch]$ShowHidden
 )
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"
 $script:CliName = "project-stack"
+$script:MarkersCatalog = $null
 
 function Resolve-RepositoryTarget {
     param([string]$Source)
@@ -217,6 +235,47 @@ function ConvertTo-ObjectArray {
     }
 
     return , @($InputObject)
+}
+
+function Flatten-StringList {
+    param($InputObject)
+
+    # Return List[string] (does not unwrap like Object[]).
+    $result = New-Object System.Collections.Generic.List[string]
+    $stack = New-Object System.Collections.Generic.Stack[object]
+    $stack.Push($InputObject)
+
+    while ($stack.Count -gt 0) {
+        $current = $stack.Pop()
+        if ($null -eq $current) {
+            continue
+        }
+
+        if ($current -is [string]) {
+            if (-not [string]::IsNullOrWhiteSpace($current)) {
+                $result.Add($current)
+            }
+            continue
+        }
+
+        if ($current -is [System.Collections.IEnumerable] -and -not ($current -is [string])) {
+            $buffer = New-Object System.Collections.Generic.List[object]
+            foreach ($item in $current) {
+                $buffer.Add($item)
+            }
+            for ($i = $buffer.Count - 1; $i -ge 0; $i--) {
+                $stack.Push($buffer[$i])
+            }
+            continue
+        }
+
+        $text = [string]$current
+        if (-not [string]::IsNullOrWhiteSpace($text) -and $text -ne "System.Object[]") {
+            $result.Add($text)
+        }
+    }
+
+    return $result
 }
 
 function Get-RelativePathSafe {
@@ -830,54 +889,95 @@ function Resolve-DependencyVersion {
     return $null
 }
 
-function Get-TechnologyMarkersCatalog {
-    @(
-        [pscustomobject]@{ Name = "Docker"; Category = "Containerization"; Files = @("Dockerfile", "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"); Keywords = @(); Packages = @(); Confidence = "high"; Description = "Docker containerization"; Directories = $false },
-        [pscustomobject]@{ Name = "Kubernetes"; Category = "Containerization"; Files = @("k8s", "kubernetes", "charts", "manifests"); Keywords = @(); Packages = @(); Confidence = "medium"; Description = "Kubernetes orchestration"; Directories = $true },
-        [pscustomobject]@{ Name = "Node.js"; Category = "Runtime"; Files = @("package.json"); Keywords = @(); Packages = @(); Confidence = "high"; Description = "Node.js runtime"; Directories = $false },
-        [pscustomobject]@{ Name = "Python"; Category = "Runtime"; Files = @("requirements.txt", "pyproject.toml", "setup.py", "Pipfile", "poetry.lock", ".python-version", "runtime.txt"); Keywords = @(); Packages = @(); Confidence = "high"; Description = "Python runtime"; Directories = $false },
-        [pscustomobject]@{ Name = "Go"; Category = "Runtime"; Files = @("go.mod", "go.sum"); Keywords = @(); Packages = @(); Confidence = "high"; Description = "Go runtime"; Directories = $false },
-        [pscustomobject]@{ Name = "Rust"; Category = "Runtime"; Files = @("Cargo.toml", "Cargo.lock"); Keywords = @(); Packages = @(); Confidence = "high"; Description = "Rust runtime"; Directories = $false },
-        [pscustomobject]@{ Name = "React"; Category = "Frontend framework"; Files = @(); Keywords = @("react"); Packages = @("react"); Confidence = "high"; Description = "React frontend framework"; Directories = $false },
-        [pscustomobject]@{ Name = "Vue"; Category = "Frontend framework"; Files = @(); Keywords = @("vue"); Packages = @("vue"); Confidence = "high"; Description = "Vue frontend framework"; Directories = $false },
-        [pscustomobject]@{ Name = "Angular"; Category = "Frontend framework"; Files = @(); Keywords = @("@angular/core"); Packages = @("@angular/core"); Confidence = "high"; Description = "Angular frontend framework"; Directories = $false },
-        [pscustomobject]@{ Name = "Svelte"; Category = "Frontend framework"; Files = @(); Keywords = @("svelte"); Packages = @("svelte"); Confidence = "medium"; Description = "Svelte frontend framework"; Directories = $false },
-        [pscustomobject]@{ Name = "Next.js"; Category = "Frontend framework"; Files = @(); Keywords = @("next"); Packages = @("next"); Confidence = "high"; Description = "Next.js full-stack framework"; Directories = $false },
-        [pscustomobject]@{ Name = "TypeScript"; Category = "Language"; Files = @("tsconfig.json"); Keywords = @("typescript"); Packages = @("typescript"); Confidence = "high"; Description = "TypeScript language"; Directories = $false },
-        [pscustomobject]@{ Name = "Tailwind CSS"; Category = "Styling"; Files = @("tailwind.config.js", "tailwind.config.ts", "tailwind.config.cjs", "tailwind.config.mjs"); Keywords = @("tailwindcss"); Packages = @("tailwindcss"); Confidence = "high"; Description = "Tailwind CSS utility framework"; Directories = $false },
-        [pscustomobject]@{ Name = "PostgreSQL"; Category = "Database"; Files = @(); Keywords = @("postgres", "postgresql", "psycopg2", "psycopg"); Packages = @("psycopg2", "psycopg2-binary", "psycopg", "pg", "postgres"); Confidence = "medium"; Description = "PostgreSQL relational database"; Directories = $false },
-        [pscustomobject]@{ Name = "MySQL"; Category = "Database"; Files = @(); Keywords = @("mysql"); Packages = @("mysql", "mysql2", "mysqlclient", "pymysql"); Confidence = "medium"; Description = "MySQL relational database"; Directories = $false },
-        [pscustomobject]@{ Name = "MongoDB"; Category = "Database"; Files = @(); Keywords = @("mongodb", "mongoose"); Packages = @("mongodb", "mongoose", "pymongo"); Confidence = "medium"; Description = "MongoDB document database"; Directories = $false },
-        [pscustomobject]@{ Name = "Redis"; Category = "Database"; Files = @(); Keywords = @("redis", "ioredis"); Packages = @("redis", "ioredis"); Confidence = "medium"; Description = "Redis in-memory database"; Directories = $false },
-        [pscustomobject]@{ Name = "GraphQL"; Category = "API"; Files = @("schema.graphql"); Keywords = @("graphql", "apollo", "urql"); Packages = @("graphql", "@apollo/client", "apollo-server", "urql"); Confidence = "medium"; Description = "GraphQL API layer"; Directories = $false },
-        [pscustomobject]@{ Name = "FastAPI"; Category = "Web framework"; Files = @(); Keywords = @("fastapi"); Packages = @("fastapi"); Confidence = "high"; Description = "FastAPI Python web framework"; Directories = $false },
-        [pscustomobject]@{ Name = "Django"; Category = "Web framework"; Files = @(); Keywords = @("django"); Packages = @("django"); Confidence = "high"; Description = "Django Python web framework"; Directories = $false },
-        [pscustomobject]@{ Name = "Flask"; Category = "Web framework"; Files = @(); Keywords = @("flask"); Packages = @("flask"); Confidence = "medium"; Description = "Flask Python web framework"; Directories = $false },
-        [pscustomobject]@{ Name = "Express"; Category = "Web framework"; Files = @(); Keywords = @("express"); Packages = @("express"); Confidence = "medium"; Description = "Express Node.js web framework"; Directories = $false },
-        [pscustomobject]@{ Name = "NestJS"; Category = "Web framework"; Files = @(); Keywords = @("@nestjs/core"); Packages = @("@nestjs/core"); Confidence = "high"; Description = "NestJS Node.js framework"; Directories = $false },
-        [pscustomobject]@{ Name = "GitHub Actions"; Category = "CI/CD"; Files = @(".github/workflows"); Keywords = @(); Packages = @(); Confidence = "high"; Description = "GitHub Actions CI"; Directories = $true },
-        [pscustomobject]@{ Name = "GitLab CI"; Category = "CI/CD"; Files = @(".gitlab-ci.yml"); Keywords = @(); Packages = @(); Confidence = "high"; Description = "GitLab CI"; Directories = $false },
-        [pscustomobject]@{ Name = "Jenkins"; Category = "CI/CD"; Files = @("Jenkinsfile"); Keywords = @(); Packages = @(); Confidence = "high"; Description = "Jenkins CI"; Directories = $false },
-        [pscustomobject]@{ Name = "Terraform"; Category = "Infrastructure"; Files = @("*.tf"); Keywords = @(); Packages = @(); Confidence = "high"; Description = "Terraform infrastructure-as-code"; Directories = $false },
-        [pscustomobject]@{ Name = "AWS CDK"; Category = "Infrastructure"; Files = @("cdk.json"); Keywords = @("aws-cdk"); Packages = @("aws-cdk-lib", "aws-cdk"); Confidence = "high"; Description = "AWS CDK infrastructure-as-code"; Directories = $false },
-        [pscustomobject]@{ Name = "LangChain"; Category = "AI / RAG"; Files = @(); Keywords = @("langchain", "langchain-core", "@langchain/core"); Packages = @("langchain", "langchain-core", "@langchain/core"); Confidence = "high"; Description = "LangChain LLM framework"; Directories = $false },
-        [pscustomobject]@{ Name = "LlamaIndex"; Category = "AI / RAG"; Files = @(); Keywords = @("llama-index", "llama_index"); Packages = @("llama-index", "llama_index"); Confidence = "high"; Description = "LlamaIndex data framework for LLM applications"; Directories = $false },
-        [pscustomobject]@{ Name = "ChromaDB"; Category = "AI / RAG"; Files = @(); Keywords = @("chromadb"); Packages = @("chromadb"); Confidence = "high"; Description = "ChromaDB vector database for embeddings"; Directories = $false },
-        [pscustomobject]@{ Name = "Pinecone"; Category = "AI / RAG"; Files = @(); Keywords = @("@pinecone-database/pinecone", "pinecone-client", "pinecone"); Packages = @("@pinecone-database/pinecone", "pinecone-client", "pinecone"); Confidence = "high"; Description = "Pinecone managed vector database"; Directories = $false },
-        [pscustomobject]@{ Name = "Qdrant"; Category = "AI / RAG"; Files = @(); Keywords = @("qdrant"); Packages = @("qdrant-client", "qdrant"); Confidence = "high"; Description = "Qdrant vector database"; Directories = $false },
-        [pscustomobject]@{ Name = "Weaviate"; Category = "AI / RAG"; Files = @(); Keywords = @("weaviate-client"); Packages = @("weaviate-client", "weaviate"); Confidence = "high"; Description = "Weaviate vector database"; Directories = $false },
-        [pscustomobject]@{ Name = "pgvector"; Category = "AI / RAG"; Files = @(); Keywords = @("pgvector"); Packages = @("pgvector"); Confidence = "high"; Description = "pgvector vector-similarity extension for PostgreSQL"; Directories = $false },
-        [pscustomobject]@{ Name = "MCP"; Category = "AI / Tooling"; Files = @(); Keywords = @("modelcontextprotocol", "@modelcontextprotocol/sdk", "mcp-server", "mcp_sdk"); Packages = @("modelcontextprotocol", "@modelcontextprotocol/sdk", "mcp"); Confidence = "high"; Description = "Model Context Protocol integration"; Directories = $false },
-        [pscustomobject]@{ Name = "OpenAI API"; Category = "AI / API"; Files = @(); Keywords = @("openai"); Packages = @("openai"); Confidence = "medium"; Description = "OpenAI API integration"; Directories = $false },
-        [pscustomobject]@{ Name = "Anthropic API"; Category = "AI / API"; Files = @(); Keywords = @("anthropic", "@anthropic-ai/sdk"); Packages = @("anthropic", "@anthropic-ai/sdk"); Confidence = "medium"; Description = "Anthropic Claude API integration"; Directories = $false },
-        [pscustomobject]@{ Name = "Pytest"; Category = "Testing"; Files = @(); Keywords = @("pytest"); Packages = @("pytest"); Confidence = "high"; Description = "Pytest testing framework"; Directories = $false },
-        [pscustomobject]@{ Name = "Jest"; Category = "Testing"; Files = @(); Keywords = @("jest"); Packages = @("jest"); Confidence = "medium"; Description = "Jest testing framework"; Directories = $false },
-        [pscustomobject]@{ Name = "Vitest"; Category = "Testing"; Files = @(); Keywords = @("vitest"); Packages = @("vitest"); Confidence = "medium"; Description = "Vitest testing framework"; Directories = $false },
-        [pscustomobject]@{ Name = "Playwright"; Category = "Testing"; Files = @("playwright.config.ts", "playwright.config.js"); Keywords = @("@playwright/test"); Packages = @("@playwright/test", "playwright"); Confidence = "high"; Description = "Playwright end-to-end testing"; Directories = $false },
-        [pscustomobject]@{ Name = "Cypress"; Category = "Testing"; Files = @("cypress.config.ts", "cypress.config.js", "cypress.json"); Keywords = @("cypress"); Packages = @("cypress"); Confidence = "medium"; Description = "Cypress end-to-end testing"; Directories = $false },
-        [pscustomobject]@{ Name = "ESLint"; Category = "Linting"; Files = @(".eslintrc", ".eslintrc.json", ".eslintrc.js", ".eslintrc.cjs", ".eslintrc.yml", ".eslintrc.yaml", "eslint.config.js", "eslint.config.mjs", "eslint.config.cjs"); Keywords = @("eslint"); Packages = @("eslint"); Confidence = "high"; Description = "ESLint linter"; Directories = $false },
-        [pscustomobject]@{ Name = "Prettier"; Category = "Formatting"; Files = @(".prettierrc", ".prettierrc.json", ".prettierrc.js", ".prettierrc.cjs", ".prettierrc.yml", ".prettierrc.yaml", "prettier.config.js"); Keywords = @("prettier"); Packages = @("prettier"); Confidence = "high"; Description = "Prettier code formatter"; Directories = $false }
-    )
+function Get-JsonStringArray {
+    param($Value)
+
+    $result = New-Object System.Collections.Generic.List[string]
+
+    if ($null -eq $Value) {
+        return $result
+    }
+
+    foreach ($item in @($Value)) {
+        if ($null -eq $item) {
+            continue
+        }
+
+        if ($item -is [System.Array]) {
+            foreach ($inner in $item) {
+                if ($null -ne $inner -and -not [string]::IsNullOrWhiteSpace([string]$inner)) {
+                    $result.Add([string]$inner)
+                }
+            }
+            continue
+        }
+
+        $text = [string]$item
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            $result.Add($text)
+        }
+    }
+
+    return $result
+}
+
+function Import-MarkersCatalog {
+    param([string]$MarkersPath)
+
+    if ([string]::IsNullOrWhiteSpace($MarkersPath)) {
+        $MarkersPath = Join-Path $PSScriptRoot "config\markers.json"
+    }
+
+    if (-not (Test-Path -LiteralPath $MarkersPath -PathType Leaf)) {
+        throw ("Markers catalog not found: " + $MarkersPath)
+    }
+
+    $raw = Get-Content -LiteralPath $MarkersPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $markers = @()
+
+    foreach ($m in (ConvertTo-ObjectArray -InputObject $raw.markers)) {
+        $directories = $false
+        if ($null -ne $m.PSObject.Properties["directories"] -and $m.directories) {
+            $directories = [bool]$m.directories
+        }
+
+        $markers += [pscustomobject]@{
+            Name         = [string]$m.name
+            Category     = [string]$m.category
+            Files        = (Get-JsonStringArray -Value $m.files)
+            Keywords     = (Get-JsonStringArray -Value $m.keywords)
+            Packages     = (Get-JsonStringArray -Value $m.packages)
+            Directories  = $directories
+            Confidence   = [string]$m.confidence
+            Description  = [string]$m.description
+            Implies      = (Get-JsonStringArray -Value $m.implies)
+            Capabilities = (Get-JsonStringArray -Value $m.capabilities)
+        }
+    }
+
+    $rules = @()
+    if ($null -ne $raw.PSObject.Properties["capabilityRules"]) {
+        foreach ($rule in (ConvertTo-ObjectArray -InputObject $raw.capabilityRules)) {
+            $requireEvidence = ""
+            if ($null -ne $rule.PSObject.Properties["requireEvidenceContains"]) {
+                $requireEvidence = [string]$rule.requireEvidenceContains
+            }
+
+            $rules += [pscustomobject]@{
+                Capability              = [string]$rule.capability
+                AnyOf                   = (Get-JsonStringArray -Value $rule.anyOf)
+                RequireEvidenceContains = $requireEvidence
+            }
+        }
+    }
+
+    Write-Verbose ("{0}: loaded {1} markers from {2}" -f $script:CliName, $markers.Count, $MarkersPath)
+
+    return [pscustomobject]@{
+        Path             = $MarkersPath
+        Markers          = $markers
+        CapabilityRules  = $rules
+    }
 }
 
 function Find-TechnologyMarkers {
@@ -887,7 +987,8 @@ function Find-TechnologyMarkers {
         [string[]]$ExtraKeywords,
         [bool]$Recurse,
         [string[]]$ExcludeDirectories,
-        [bool]$ShowHidden
+        [bool]$ShowHidden,
+        $Catalog
     )
 
     $findings = @()
@@ -901,11 +1002,11 @@ function Find-TechnologyMarkers {
         )
     }
 
-    $markers = Get-TechnologyMarkersCatalog
+    $markers = ConvertTo-ObjectArray -InputObject $Catalog.Markers
     $keyFileNames = @(
         "package.json", "requirements.txt", "requirements-dev.txt",
         "requirements-test.txt", "pyproject.toml", "Pipfile", "setup.py",
-        "go.mod", "Cargo.toml"
+        "go.mod", "Cargo.toml", "composer.json", "Gemfile"
     )
 
     foreach ($root in $scanRoots) {
@@ -931,45 +1032,66 @@ function Find-TechnologyMarkers {
         foreach ($marker in $markers) {
             $found = $false
             $evidence = @()
+            $detectionKinds = @()
             $packages = ConvertTo-ObjectArray -InputObject $marker.Packages
+            $files = ConvertTo-ObjectArray -InputObject $marker.Files
+            $keywords = ConvertTo-ObjectArray -InputObject $marker.Keywords
 
             if ($marker.Directories) {
-                foreach ($directoryName in $marker.Files) {
+                foreach ($directoryName in $files) {
                     $candidate = Join-Path $root $directoryName
                     if (Test-Path -LiteralPath $candidate -PathType Container) {
                         $found = $true
+                        $detectionKinds += "directory"
                         $evidence += (Get-RelativePathSafe -Root $Root -FullPath $candidate) + "/"
                     }
                 }
             }
-            elseif ($marker.Files.Count -gt 0) {
-                if ($marker.Files -contains "*.tf") {
-                    $tfFiles = ConvertTo-ObjectArray -InputObject (
-                        Find-FilesByFilter -Root $root -Filter "*.tf" -Recurse:$Recurse `
-                            -ExcludeDirectories $ExcludeDirectories -ShowHidden:$ShowHidden
-                    )
-                    if ($tfFiles.Count -gt 0) {
-                        $found = $true
-                        $evidence += Get-RelativePathSafe -Root $Root -FullPath $tfFiles[0]
+            elseif ($files.Count -gt 0) {
+                $literalNames = @()
+                $globs = @()
+                foreach ($relativePath in $files) {
+                    if ($relativePath -like "*.*" -and $relativePath.Contains("*")) {
+                        $globs += $relativePath
+                    }
+                    elseif ($relativePath.StartsWith("*")) {
+                        $globs += $relativePath
+                    }
+                    else {
+                        $literalNames += $relativePath
                     }
                 }
-                else {
+
+                foreach ($glob in $globs) {
+                    $globFiles = ConvertTo-ObjectArray -InputObject (
+                        Find-FilesByFilter -Root $root -Filter $glob -Recurse:$Recurse `
+                            -ExcludeDirectories $ExcludeDirectories -ShowHidden:$ShowHidden
+                    )
+                    if ($globFiles.Count -gt 0) {
+                        $found = $true
+                        $detectionKinds += "file"
+                        $evidence += Get-RelativePathSafe -Root $Root -FullPath $globFiles[0]
+                    }
+                }
+
+                if ($literalNames.Count -gt 0) {
                     $matchedFiles = ConvertTo-ObjectArray -InputObject (
-                        Find-NamedFiles -Root $root -FileNames $marker.Files -Recurse:$Recurse `
+                        Find-NamedFiles -Root $root -FileNames $literalNames -Recurse:$Recurse `
                             -ExcludeDirectories $ExcludeDirectories -ShowHidden:$ShowHidden
                     )
 
                     foreach ($matched in $matchedFiles) {
                         $found = $true
+                        $detectionKinds += "file"
                         $evidence += Get-RelativePathSafe -Root $Root -FullPath $matched
                     }
                 }
             }
 
-            if (-not $found -and ($marker.Keywords.Count -gt 0 -or $ExtraKeywords.Count -gt 0 -or $packages.Count -gt 0)) {
+            if (-not $found -and ($keywords.Count -gt 0 -or $ExtraKeywords.Count -gt 0 -or $packages.Count -gt 0)) {
                 $searchTerms = @()
                 $searchTerms += $packages
-                $searchTerms += $marker.Keywords
+                $searchTerms += $keywords
                 $searchTerms += $ExtraKeywords
                 $searchTerms = @($searchTerms | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
 
@@ -989,7 +1111,7 @@ function Find-TechnologyMarkers {
                         elseif ($leaf -eq "package.json") {
                             $matched = Test-PackageJsonDependency -Content $content -PackageName $term
                         }
-                        elseif ($leaf -eq "pyproject.toml" -or $leaf -eq "Pipfile" -or $leaf -eq "setup.py" -or $leaf -eq "go.mod" -or $leaf -eq "Cargo.toml") {
+                        elseif ($leaf -eq "pyproject.toml" -or $leaf -eq "Pipfile" -or $leaf -eq "setup.py" -or $leaf -eq "go.mod" -or $leaf -eq "Cargo.toml" -or $leaf -eq "composer.json" -or $leaf -eq "Gemfile") {
                             $matched = Test-TomlPackagePresent -Content $content -PackageName $term
                         }
                         else {
@@ -998,6 +1120,7 @@ function Find-TechnologyMarkers {
 
                         if ($matched) {
                             $found = $true
+                            $detectionKinds += "package"
                             $evidence += ("Package: " + $term + " in " + (Get-RelativePathSafe -Root $Root -FullPath $depFile))
                             break
                         }
@@ -1011,12 +1134,15 @@ function Find-TechnologyMarkers {
 
             if ($found) {
                 $findings += [pscustomobject]@{
-                    Name        = $marker.Name
-                    Category    = $marker.Category
-                    Confidence  = $marker.Confidence
-                    Description = $marker.Description
-                    Packages    = $packages
-                    Evidence    = (($evidence | Select-Object -Unique) -join "; ")
+                    Name           = $marker.Name
+                    Category       = $marker.Category
+                    Confidence     = $marker.Confidence
+                    Description    = $marker.Description
+                    Packages       = @(Flatten-StringList -InputObject $packages)
+                    Implies        = @(Flatten-StringList -InputObject $marker.Implies)
+                    Capabilities   = @(Flatten-StringList -InputObject $marker.Capabilities)
+                    DetectionKinds = @($detectionKinds | Select-Object -Unique)
+                    Evidence       = (($evidence | Select-Object -Unique) -join "; ")
                 }
             }
         }
@@ -1032,7 +1158,8 @@ function Get-VersionedFindings {
         [string[]]$ExtraKeywords,
         [bool]$Recurse,
         [string[]]$ExcludeDirectories,
-        [bool]$ShowHidden
+        [bool]$ShowHidden,
+        $Catalog
     )
 
     $findings = ConvertTo-ObjectArray -InputObject (
@@ -1042,7 +1169,8 @@ function Get-VersionedFindings {
             -ExtraKeywords $ExtraKeywords `
             -Recurse:$Recurse `
             -ExcludeDirectories $ExcludeDirectories `
-            -ShowHidden:$ShowHidden
+            -ShowHidden:$ShowHidden `
+            -Catalog $Catalog
     )
 
     $versionedFindings = @()
@@ -1170,14 +1298,22 @@ function Get-VersionedFindings {
         }
 
         $versionedFindings += [pscustomobject]@{
-            Technology    = $finding.Name
-            Category      = $finding.Category
-            Version       = $version
-            VersionSource = $versionSource
-            Confidence    = $finding.Confidence
-            Description   = $finding.Description
-            Evidence      = $finding.Evidence
-            ResumeLine    = ""
+            Technology     = $finding.Name
+            Category       = $finding.Category
+            Version        = $version
+            VersionSource  = $versionSource
+            Confidence     = $finding.Confidence
+            Description    = $finding.Description
+            Evidence       = $finding.Evidence
+            Packages       = $finding.Packages
+            Implies        = $finding.Implies
+            Capabilities   = $finding.Capabilities
+            DetectionKinds = $finding.DetectionKinds
+            Score          = 0
+            Relation       = ""
+            Uses           = ""
+            IsPrimary      = $true
+            ResumeLine     = ""
         }
     }
 
@@ -1192,38 +1328,200 @@ function Get-VersionedFindings {
     return $versionedFindings
 }
 
-function Select-FindingsByConfidence {
-    param(
-        [array]$Findings,
-        [string]$MinConfidence
-    )
+function Get-ConfidenceRank {
+    param([string]$Confidence)
 
-    if ($MinConfidence -eq "high") {
-        return , @($Findings | Where-Object { $_.Confidence -eq "high" })
+    switch ($Confidence) {
+        "high" { return 3 }
+        "medium" { return 2 }
+        "low" { return 1 }
+        default { return 0 }
     }
-
-    return , @($Findings)
 }
 
-function Get-ResumeSummary {
-    param([array]$Findings)
+function ConvertFrom-ScoreToConfidence {
+    param([int]$Score)
 
-    if ($Findings.Count -eq 0) {
-        return [ordered]@{
-            StackLine = ""
-            Bullets   = @()
-            ByCategory = @()
+    if ($Score -ge 75) { return "high" }
+    if ($Score -ge 45) { return "medium" }
+    return "low"
+}
+
+function Get-FindingScore {
+    param($Finding)
+
+    $score = 0
+    $kinds = ConvertTo-ObjectArray -InputObject $Finding.DetectionKinds
+    $evidenceParts = @()
+    if (-not [string]::IsNullOrWhiteSpace($Finding.Evidence)) {
+        $evidenceParts = @($Finding.Evidence -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    }
+
+    if ($kinds -contains "file" -or $kinds -contains "directory") {
+        $score += 50
+    }
+    if ($kinds -contains "package") {
+        $score += 35
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Finding.Version)) {
+        $score += 15
+    }
+    if ($evidenceParts.Count -ge 2) {
+        $score += 10
+    }
+
+    # Keep a floor from catalog confidence for sparse-but-explicit markers.
+    $floor = switch ($Finding.Confidence) {
+        "high" { 75 }
+        "medium" { 50 }
+        default { 25 }
+    }
+
+    if ($score -lt $floor -and ($kinds -contains "file" -or $kinds -contains "directory" -or $kinds -contains "package")) {
+        $score = $floor
+    }
+
+    if ($score -gt 100) { $score = 100 }
+    return $score
+}
+
+function Enrich-Findings {
+    param(
+        [array]$Findings,
+        $Catalog
+    )
+
+    $items = ConvertTo-ObjectArray -InputObject $Findings
+    $byName = @{}
+    foreach ($item in $items) {
+        $byName[$item.Technology] = $item
+    }
+
+    foreach ($item in $items) {
+        $item.Score = Get-FindingScore -Finding $item
+        $item.Confidence = ConvertFrom-ScoreToConfidence -Score $item.Score
+    }
+
+    # Hierarchy: mark implied technologies and parent "Uses" chains.
+    foreach ($item in $items) {
+        $implies = @(Flatten-StringList -InputObject $item.Implies)
+        $item.Implies = $implies
+        $used = @()
+        foreach ($parentName in $implies) {
+            if ($byName.ContainsKey($parentName)) {
+                $used += $parentName
+                $child = $byName[$parentName]
+                $relation = ("implied by " + $item.Technology)
+                if ([string]::IsNullOrWhiteSpace($child.Relation)) {
+                    $child.Relation = $relation
+                }
+                else {
+                    $child.Relation = ($child.Relation + "; " + $relation)
+                }
+                $child.IsPrimary = $false
+            }
+        }
+        if ($used.Count -gt 0) {
+            $item.Uses = ($used -join ", ")
+            $suffix = (" (uses " + $item.Uses + ")")
+            if (-not $item.ResumeLine.EndsWith($suffix)) {
+                $item.ResumeLine = $item.ResumeLine + $suffix
+            }
         }
     }
 
-    $ordered = @($Findings | Sort-Object Category, Technology)
+    # Project-level capabilities from marker tags + rules.
+    $capabilitySet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($item in $items) {
+        $item.Capabilities = @(Flatten-StringList -InputObject $item.Capabilities)
+        $item.Implies = @(Flatten-StringList -InputObject $item.Implies)
+        foreach ($cap in $item.Capabilities) {
+            [void]$capabilitySet.Add($cap)
+        }
+    }
+
+    foreach ($rule in (ConvertTo-ObjectArray -InputObject $Catalog.CapabilityRules)) {
+        $matched = $false
+        foreach ($name in @(Flatten-StringList -InputObject $rule.AnyOf)) {
+            if (-not $byName.ContainsKey($name)) {
+                continue
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($rule.RequireEvidenceContains)) {
+                $needle = [string]$rule.RequireEvidenceContains
+                if ($byName[$name].Evidence -notmatch [regex]::Escape($needle)) {
+                    continue
+                }
+            }
+
+            $matched = $true
+            break
+        }
+
+        if ($matched) {
+            [void]$capabilitySet.Add([string]$rule.Capability)
+        }
+    }
+
+    $projectCapabilities = @($capabilitySet | Sort-Object)
+
+    return [pscustomobject]@{
+        Findings     = $items
+        Capabilities = $projectCapabilities
+    }
+}
+
+function Select-FindingsByConfidence {
+    param(
+        [array]$Findings,
+        [string]$MinConfidence,
+        [int]$MinScore = 0
+    )
+
+    $minRank = Get-ConfidenceRank -Confidence $MinConfidence
+    $filtered = @(
+        $Findings | Where-Object {
+            (Get-ConfidenceRank -Confidence $_.Confidence) -ge $minRank -and $_.Score -ge $MinScore
+        }
+    )
+
+    return , $filtered
+}
+
+function Get-ResumeSummary {
+    param(
+        [array]$Findings,
+        [string[]]$Capabilities = @(),
+        [bool]$CollapseImplied = $true
+    )
+
+    if ($Findings.Count -eq 0) {
+        return [ordered]@{
+            StackLine    = ""
+            Bullets      = @()
+            ByCategory   = @()
+            Capabilities = @()
+        }
+    }
+
+    $primary = @($Findings)
+    if ($CollapseImplied) {
+        $primary = @($Findings | Where-Object { $_.IsPrimary })
+        if ($primary.Count -eq 0) {
+            $primary = @($Findings)
+        }
+    }
+
+    $ordered = @($primary | Sort-Object @{Expression = "Score"; Descending = $true}, Category, Technology)
     $stackParts = @(
         foreach ($f in $ordered) {
             if ([string]::IsNullOrWhiteSpace($f.Version)) {
-                $f.Technology
+                if ([string]::IsNullOrWhiteSpace($f.Uses)) { $f.Technology }
+                else { ($f.Technology + " (uses " + $f.Uses + ")") }
             }
             else {
-                ($f.Technology + " " + $f.Version)
+                if ([string]::IsNullOrWhiteSpace($f.Uses)) { ($f.Technology + " " + $f.Version) }
+                else { ($f.Technology + " " + $f.Version + " (uses " + $f.Uses + ")") }
             }
         }
     )
@@ -1244,24 +1542,31 @@ function Get-ResumeSummary {
     )
 
     $bullets = @()
-    $ai = @($ordered | Where-Object { $_.Category -like "AI*" })
+    $ai = @($ordered | Where-Object { $_.Category -like "AI*" -or ($_.Capabilities -contains "RAG") -or ($_.Capabilities -contains "AI") })
     $web = @($ordered | Where-Object { $_.Category -in @("Web framework", "Frontend framework") })
     $runtime = @($ordered | Where-Object { $_.Category -eq "Runtime" })
     $containers = @($ordered | Where-Object { $_.Category -eq "Containerization" })
 
     if ($web.Count -gt 0 -or $runtime.Count -gt 0) {
-        $parts = @($runtime + $web | ForEach-Object { $_.ResumeLine })
+        $parts = @($runtime + $web | ForEach-Object { $_.Technology + $(if ($_.Version) { " $($_.Version)" } else { "" }) })
         $bullets += ("Developed application stack with " + ($parts -join ", ") + ".")
     }
 
-    if ($ai.Count -gt 0) {
-        $parts = @($ai | ForEach-Object { $_.ResumeLine })
+    if ($Capabilities -contains "RAG" -or $ai.Count -gt 0) {
+        $parts = @($ai | ForEach-Object { $_.Technology + $(if ($_.Version) { " $($_.Version)" } else { "" }) })
+        if ($parts.Count -eq 0) {
+            $parts = @($Capabilities | Where-Object { $_ -in @("RAG", "Agents", "AI") })
+        }
         $bullets += ("Implemented AI/RAG capabilities using " + ($parts -join ", ") + ".")
     }
 
     if ($containers.Count -gt 0) {
-        $parts = @($containers | ForEach-Object { $_.ResumeLine })
-        $bullets += ("Packaged and ran services with " + ($parts -join ", ") + ".")
+        $parts = @($containers | ForEach-Object { $_.Technology + $(if ($_.Version) { " $($_.Version)" } else { "" }) })
+        $suffix = ""
+        if ($Capabilities -contains "Multi-service") {
+            $suffix = " in a multi-service setup"
+        }
+        $bullets += ("Packaged and ran services with " + ($parts -join ", ") + $suffix + ".")
     }
 
     if ($bullets.Count -eq 0) {
@@ -1269,16 +1574,18 @@ function Get-ResumeSummary {
     }
 
     return [ordered]@{
-        StackLine  = ($stackParts -join " · ")
-        Bullets    = $bullets
-        ByCategory = $byCategory
+        StackLine    = ($stackParts -join " · ")
+        Bullets      = $bullets
+        ByCategory   = $byCategory
+        Capabilities = @($Capabilities)
     }
 }
 
 function ConvertTo-MarkdownReport {
     param(
         [array]$Findings,
-        [switch]$IncludeResume
+        [string[]]$Capabilities = @(),
+        [bool]$CollapseImplied = $true
     )
 
     $lines = @()
@@ -1288,7 +1595,7 @@ function ConvertTo-MarkdownReport {
     $lines += ("Tool: " + $script:CliName)
     $lines += ""
 
-    $summary = Get-ResumeSummary -Findings $Findings
+    $summary = Get-ResumeSummary -Findings $Findings -Capabilities $Capabilities -CollapseImplied:$CollapseImplied
     $lines += "## Resume Summary"
     $lines += ""
     if ([string]::IsNullOrWhiteSpace($summary.StackLine)) {
@@ -1297,6 +1604,10 @@ function ConvertTo-MarkdownReport {
     else {
         $lines += ("**Stack:** " + $summary.StackLine)
         $lines += ""
+        if ($Capabilities.Count -gt 0) {
+            $lines += ("**Capabilities:** " + ($Capabilities -join " · "))
+            $lines += ""
+        }
         $lines += "### Suggested bullets"
         $lines += ""
         foreach ($bullet in $summary.Bullets) {
@@ -1319,19 +1630,23 @@ function ConvertTo-MarkdownReport {
         $lines += ""
     }
     else {
-        $lines += "| Technology | Category | Version | Version Source | Confidence | Evidence |"
-        $lines += "|---|---|---|---|---|---|"
+        $lines += "| Technology | Category | Version | Score | Confidence | Relation | Capabilities | Evidence |"
+        $lines += "|---|---|---|---|---|---|---|---|"
 
-        foreach ($finding in $Findings) {
+        foreach ($finding in ($Findings | Sort-Object @{Expression = "Score"; Descending = $true}, Category, Technology)) {
             $version = if ([string]::IsNullOrWhiteSpace($finding.Version)) { "-" } else { $finding.Version }
-            $source = if ([string]::IsNullOrWhiteSpace($finding.VersionSource)) { "-" } else { $finding.VersionSource }
+            $relation = if ([string]::IsNullOrWhiteSpace($finding.Relation)) { "-" } else { $finding.Relation }
+            $caps = (@(Flatten-StringList -InputObject $finding.Capabilities) -join ", ")
+            if ([string]::IsNullOrWhiteSpace($caps)) { $caps = "-" }
 
             $lines += (
                 "| " + $finding.Technology + " | " +
                 $finding.Category + " | " +
                 $version + " | " +
-                $source + " | " +
+                $finding.Score + " | " +
                 $finding.Confidence + " | " +
+                $relation + " | " +
+                $caps + " | " +
                 $finding.Evidence + " |"
             )
         }
@@ -1343,9 +1658,13 @@ function ConvertTo-MarkdownReport {
 }
 
 function ConvertTo-ResumeMarkdown {
-    param([array]$Findings)
+    param(
+        [array]$Findings,
+        [string[]]$Capabilities = @(),
+        [bool]$CollapseImplied = $true
+    )
 
-    $summary = Get-ResumeSummary -Findings $Findings
+    $summary = Get-ResumeSummary -Findings $Findings -Capabilities $Capabilities -CollapseImplied:$CollapseImplied
     $lines = @()
     $lines += "# Resume Technology Snapshot"
     $lines += ""
@@ -1355,6 +1674,12 @@ function ConvertTo-ResumeMarkdown {
     $lines += ""
     $lines += $summary.StackLine
     $lines += ""
+    if ($Capabilities.Count -gt 0) {
+        $lines += "## Capabilities"
+        $lines += ""
+        $lines += ($Capabilities -join " · ")
+        $lines += ""
+    }
     $lines += "## Bullets"
     $lines += ""
     foreach ($bullet in $summary.Bullets) {
@@ -1363,9 +1688,15 @@ function ConvertTo-ResumeMarkdown {
     $lines += ""
     $lines += "## Skills list"
     $lines += ""
-    foreach ($finding in ($Findings | Sort-Object Category, Technology)) {
+    $skillFindings = @($Findings)
+    if ($CollapseImplied) {
+        $skillFindings = @($Findings | Where-Object { $_.IsPrimary })
+        if ($skillFindings.Count -eq 0) { $skillFindings = @($Findings) }
+    }
+    foreach ($finding in ($skillFindings | Sort-Object @{Expression = "Score"; Descending = $true}, Category, Technology)) {
         $version = if ([string]::IsNullOrWhiteSpace($finding.Version)) { "" } else { (" (" + $finding.Version + ")") }
-        $lines += ("- " + $finding.Technology + $version + " — " + $finding.Category)
+        $uses = if ([string]::IsNullOrWhiteSpace($finding.Uses)) { "" } else { (" — uses " + $finding.Uses) }
+        $lines += ("- " + $finding.Technology + $version + " — " + $finding.Category + " [score " + $finding.Score + "]" + $uses)
     }
     $lines += ""
 
@@ -1373,9 +1704,13 @@ function ConvertTo-ResumeMarkdown {
 }
 
 function ConvertTo-ResumeJson {
-    param([array]$Findings)
+    param(
+        [array]$Findings,
+        [string[]]$Capabilities = @(),
+        [bool]$CollapseImplied = $true
+    )
 
-    $summary = Get-ResumeSummary -Findings $Findings
+    $summary = Get-ResumeSummary -Findings $Findings -Capabilities $Capabilities -CollapseImplied:$CollapseImplied
 
     [ordered]@{
         Technologies = @(
@@ -1386,19 +1721,25 @@ function ConvertTo-ResumeJson {
                     Version       = $finding.Version
                     VersionSource = $finding.VersionSource
                     Confidence    = $finding.Confidence
+                    Score         = $finding.Score
+                    Relation      = $finding.Relation
+                    Uses          = $finding.Uses
+                    IsPrimary     = $finding.IsPrimary
+                    Capabilities  = @($finding.Capabilities)
                     Evidence      = $finding.Evidence
                     ResumeLine    = $finding.ResumeLine
                 }
             }
         )
-        Summary     = $summary
-        GeneratedAt = (Get-Date).ToString("o")
-        Total       = $Findings.Count
-        Categories  = @(
+        Capabilities = @($Capabilities)
+        Summary      = $summary
+        GeneratedAt  = (Get-Date).ToString("o")
+        Total        = $Findings.Count
+        Categories   = @(
             $Findings | Group-Object -Property Category |
                 Select-Object Name, Count
         )
-        Tool        = $script:CliName
+        Tool         = $script:CliName
     }
 }
 
@@ -1406,6 +1747,8 @@ function ConvertTo-ResumeJson {
 
 try {
     Write-Host ("{0}: resolving repository..." -f $script:CliName)
+
+    $script:MarkersCatalog = Import-MarkersCatalog -MarkersPath $MarkersPath
 
     $target = Resolve-RepositoryTarget -Source $Repository
 
@@ -1415,6 +1758,7 @@ try {
         -ReuseExisting:$ReuseExisting.IsPresent
 
     Write-Host ("{0}: analyzing {1}" -f $script:CliName, $projectRoot)
+    Write-Host ("{0}: markers catalog {1}" -f $script:CliName, $script:MarkersCatalog.Path)
     if ($Recurse) {
         Write-Host ("{0}: recursive scan enabled" -f $script:CliName)
     }
@@ -1426,17 +1770,24 @@ try {
             -ExtraKeywords $ExtraKeywords `
             -Recurse:$Recurse `
             -ExcludeDirectories $ExcludeDirectories `
-            -ShowHidden:$ShowHidden.IsPresent
+            -ShowHidden:$ShowHidden.IsPresent `
+            -Catalog $script:MarkersCatalog
     )
 
+    $enriched = Enrich-Findings -Findings $findings -Catalog $script:MarkersCatalog
+    $findings = ConvertTo-ObjectArray -InputObject $enriched.Findings
+    $capabilities = @(Flatten-StringList -InputObject $enriched.Capabilities)
+
     $findings = ConvertTo-ObjectArray -InputObject (
-        Select-FindingsByConfidence -Findings $findings -MinConfidence $MinConfidence
+        Select-FindingsByConfidence -Findings $findings -MinConfidence $MinConfidence -MinScore $MinScore
     )
 
     [void](New-Item -ItemType Directory -Path $OutputDirectory -Force)
 
     $findings |
-        Select-Object Technology, Category, Version, VersionSource, Confidence, Description, Evidence, ResumeLine |
+        Select-Object Technology, Category, Version, VersionSource, Confidence, Score, Relation, Uses, IsPrimary, Description, Evidence, ResumeLine, @{
+            Name = "Capabilities"; Expression = { (@($_.Capabilities) -join "; ") }
+        } |
         Export-Csv -LiteralPath (Join-Path $OutputDirectory "technologies.csv") `
             -NoTypeInformation -Encoding UTF8
 
@@ -1445,19 +1796,19 @@ try {
     $writeResume = $OutputFormat -in @("resume", "all")
 
     if ($writeMarkdown) {
-        ConvertTo-MarkdownReport -Findings $findings -IncludeResume |
+        ConvertTo-MarkdownReport -Findings $findings -Capabilities $capabilities -CollapseImplied:$CollapseImplied |
             Set-Content -LiteralPath (Join-Path $OutputDirectory "README.md") `
                 -Encoding UTF8
     }
 
     if ($writeResume) {
-        ConvertTo-ResumeMarkdown -Findings $findings |
+        ConvertTo-ResumeMarkdown -Findings $findings -Capabilities $capabilities -CollapseImplied:$CollapseImplied |
             Set-Content -LiteralPath (Join-Path $OutputDirectory "resume.md") `
                 -Encoding UTF8
     }
 
     if ($writeJson) {
-        ConvertTo-ResumeJson -Findings $findings |
+        ConvertTo-ResumeJson -Findings $findings -Capabilities $capabilities -CollapseImplied:$CollapseImplied |
             ConvertTo-Json -Depth 8 |
             Set-Content -LiteralPath (Join-Path $OutputDirectory "technologies.json") `
                 -Encoding UTF8
@@ -1486,10 +1837,17 @@ try {
     Write-Host ""
 
     $findings |
-        Sort-Object Category, Technology |
-        Format-Table Technology, Category, Version, Confidence -AutoSize -Wrap
+        Sort-Object @{Expression = "Score"; Descending = $true}, Category, Technology |
+        Format-Table Technology, Category, Version, Score, Confidence, Relation -AutoSize -Wrap
 
-    $summary = Get-ResumeSummary -Findings $findings
+    $summary = Get-ResumeSummary -Findings $findings -Capabilities $capabilities -CollapseImplied:$CollapseImplied
+    Write-Host "Capabilities:"
+    if ($capabilities.Count -gt 0) {
+        Write-Host ("  " + ($capabilities -join " · "))
+    }
+    else {
+        Write-Host "  (none)"
+    }
     Write-Host "Resume stack:"
     Write-Host ("  " + $summary.StackLine)
     Write-Host ""
@@ -1500,3 +1858,4 @@ catch {
     Write-Error ("{0}: {1}" -f $script:CliName, $_.Exception.Message)
     exit 1
 }
+

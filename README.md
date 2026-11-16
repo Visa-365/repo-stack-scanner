@@ -2,7 +2,7 @@
 
 CLI на PowerShell для **инвентаризации технологий** в исходниках проекта (локальная папка или git URL). Подходит для фиксации стека в резюме, портфолио и учёте навыков.
 
-Утилита **не собирает и не запускает** проект: ищет маркеры в конфигурации и извлекает объявленные версии.
+Утилита **не собирает и не запускает** проект: ищет маркеры в конфигурации, извлекает версии, считает score и собирает capabilities.
 
 ## Требования
 
@@ -12,113 +12,97 @@ CLI на PowerShell для **инвентаризации технологий**
 
 ## Установка / запуск
 
-Клонируйте репозиторий и вызывайте CLI из корня:
-
 ```powershell
-.\project-stack.ps1 -Repository "C:\Projects\my-app" -Recurse -OutputFormat all
-```
-
-Справка:
-
-```powershell
+.\project-stack.ps1 -Repository "C:\Projects\my-app" -OutputFormat all
 Get-Help .\project-stack.ps1 -Full
 ```
 
-> `Test-ProjectStack.ps1` — совместимый shim, который просто вызывает `project-stack.ps1`.
+> `Test-ProjectStack.ps1` — совместимый shim → `project-stack.ps1`.
 
 ## Быстрый старт
 
 ```powershell
-# Локальная папка + рекурсивный поиск Dockerfile/requirements
-.\project-stack.ps1 -Repository "C:\Projects\my-app" -Recurse
+# Полный отчёт
+.\project-stack.ps1 -Repository "C:\Projects\my-app" -OutputFormat all
 
-# Только high-confidence + resume-отчёт
-.\project-stack.ps1 -Repository "C:\Projects\my-app" -Recurse -MinConfidence high -OutputFormat resume
+# Только high + resume
+.\project-stack.ps1 -Repository "C:\Projects\my-app" -MinConfidence high -OutputFormat resume
 
 # GitHub shorthand
-.\project-stack.ps1 owner/repo -Recurse -OutputFormat all
-
-# SSH
-.\project-stack.ps1 -Repository "git@github.com:owner/repo.git" -Recurse
+.\project-stack.ps1 owner/repo -OutputFormat all
 ```
 
-Отчёты по умолчанию: `./project-stack-YYYYMMDD-HHmmss/`.
+Отчёты: `./project-stack-YYYYMMDD-HHmmss/`.
 
 ## CLI-параметры
 
 | Параметр | Описание |
 |---|---|
 | `-Repository` (`-Path`, `-Repo`) | Локальный путь, HTTPS/SSH URL или `owner/repo` |
-| `-Recurse` | Рекурсивный поиск маркеров (по умолчанию `$true`; отключить: `-Recurse:`$false`) |
-| `-MinConfidence` | `medium` (по умолчанию) или `high` |
+| `-Recurse` | Рекурсивный поиск (по умолчанию `$true`; `-Recurse:$false`) |
+| `-MinConfidence` | `low` / `medium` (default) / `high` |
+| `-MinScore` | Отбросить находки со score ниже порога (0–100) |
+| `-CollapseImplied` | Скрывать implied-технологии из resume stack (default `$true`) |
+| `-MarkersPath` | Путь к `markers.json` (default `config/markers.json`) |
 | `-OutputFormat` (`-Format`) | `markdown`, `csv`, `json`, `resume`, `all` |
 | `-OutputDirectory` (`-o`) | Каталог отчётов |
-| `-Subdirectories` | Ограничить сканирование подпапками (монорепо) |
+| `-Subdirectories` | Ограничить сканирование подпапками |
 | `-ExtraKeywords` | Дополнительные пакеты/ключевые слова |
-| `-ExcludeDirectories` | Имена каталогов, пропускаемые при `-Recurse` |
-| `-TargetDirectory` | Куда клонировать remote |
-| `-ReuseExisting` | Не клонировать повторно, если папка уже есть |
-| `-ShowHidden` | Включать скрытые файлы при рекурсии |
+| `-ExcludeDirectories` | Каталоги, пропускаемые при рекурсии |
+| `-TargetDirectory` / `-ReuseExisting` | Клон remote |
+| `-ShowHidden` | Включать скрытые файлы |
 
-Коды выхода: `0` — успех, `1` — ошибка, `2` — ничего не найдено.
+Коды выхода: `0` ok, `1` error, `2` nothing found.
 
-## Примеры
+## Возможности
 
-Монорепозиторий:
-
-```powershell
-.\project-stack.ps1 `
-  -Repository "https://github.com/owner/monorepo.git" `
-  -Subdirectories "apps/web", "apps/api" `
-  -Recurse `
-  -OutputFormat all
-```
-
-Только уверенные технологии для CV:
-
-```powershell
-.\project-stack.ps1 -Repository "C:\Projects\my-app" -Recurse `
-  -MinConfidence high -OutputFormat resume
-```
-
-## Что делает P0-улучшения
-
-- Версии из `requirements*.txt`, `package.json` (deps/engines), `pyproject.toml`
-- Рекурсивный поиск `Dockerfile` / compose / dependency-файлов (`-Recurse`)
-- Более точный match пакетов (не грубый substring)
-- Resume Summary в Markdown + отдельный `resume.md`
-- Фильтр `-MinConfidence`
+- Версии из `requirements*.txt`, `package.json`, `pyproject.toml`, Docker `FROM`
+- Рекурсивный поиск маркеров и точный package match
+- Resume Summary / `resume.md`
+- Каталог маркеров в `config/markers.json` (расширяется без правки кода)
+- Score `0–100` и confidence на его основе
+- Capabilities проекта (`RAG`, `Agents`, `API`, `Multi-service`, …)
+- Иерархия `implies` / `uses` / `Relation` (например Next.js → React, Node.js)
+- `-CollapseImplied` для компактного CV-стека
+- Расширенный набор: .NET/Java/PHP/Ruby, Prisma/Drizzle/SQLAlchemy, Celery/Kafka, LangGraph, Hugging Face, LiteLLM, OpenTelemetry, npm/yarn/pnpm/Poetry
 
 ## Отчёты
 
 | Файл | Когда | Содержимое |
 |---|---|---|
-| `technologies.csv` | всегда | таблица находок |
-| `README.md` | `markdown` / `all` | inventory + resume summary |
-| `resume.md` | `resume` / `all` | готовые формулировки для CV |
-| `technologies.json` | `json` / `resume` / `all` | JSON + Summary |
+| `technologies.csv` | всегда | таблица + score/relation |
+| `README.md` | `markdown` / `all` | inventory + resume + capabilities |
+| `resume.md` | `resume` / `all` | формулировки для CV |
+| `technologies.json` | `json` / `resume` / `all` | JSON + Summary + Capabilities |
 
-### Confidence
+### Score / Confidence
 
-- **high** — явный маркер/пакет; обычно можно в резюме
-- **medium** — эвристика; лучше перепроверить
+| Score | Confidence |
+|---|---|
+| ≥ 75 | high |
+| ≥ 45 | medium |
+| < 45 | low |
 
-## Ограничения
-
-- Это инвентаризация маркеров, не proof of expertise и не runtime-проверка
-- Версии — из файлов, не из `python --version` / `node --version`
-- Приватные репозитории требуют заранее настроенный git auth
+Сигналы: file/directory marker, package match, pinned version, несколько evidence.
 
 ## Структура
 
 ```
 .
-├── project-stack.ps1       # CLI entrypoint
-├── Test-ProjectStack.ps1   # compatibility shim
+├── project-stack.ps1
+├── Test-ProjectStack.ps1
+├── config/
+│   └── markers.json
 ├── README.md
 ├── LICENSE
 └── .gitignore
 ```
+
+## Ограничения
+
+- Инвентаризация маркеров, не proof of expertise и не runtime-проверка
+- Версии — из файлов, не из `python --version` / `node --version`
+- Приватные репозитории требуют заранее настроенный git auth
 
 ## Лицензия
 

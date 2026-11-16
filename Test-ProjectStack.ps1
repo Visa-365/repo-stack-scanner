@@ -17,14 +17,17 @@ param(
 
     [string[]]$Subdirectories = @(),
 
-    [switch]$Recurse = $true,
+    [bool]$Recurse = $true,
 
     [switch]$ReuseExisting,
 
     [string[]]$ExtraKeywords = @(),
 
-    [ValidateSet("medium", "high")]
+    [ValidateSet("low", "medium", "high")]
     [string]$MinConfidence = "medium",
+
+    [ValidateRange(0, 100)]
+    [int]$MinScore = 0,
 
     [ValidateSet("csv", "markdown", "json", "resume", "all")]
     [Alias("Format")]
@@ -43,6 +46,10 @@ param(
         ".pytest_cache", ".mypy_cache", ".next", "coverage", "htmlcov",
         ".chroma", ".agents", ".langgraph", ".cache", "Pods"
     ),
+
+    [string]$MarkersPath = "",
+
+    [bool]$CollapseImplied = $true,
 
     [switch]$ShowHidden
 )
